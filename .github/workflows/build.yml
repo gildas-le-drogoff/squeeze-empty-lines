@@ -1,0 +1,101 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  NOM: squeeze-empty-lines
+  GO_VERSION: '1.22'
+  CGO_ENABLED: 0
+  LDFLAGS: -s -w -buildid= -extldflags "-static"
+jobs:
+  build:
+    name: build-${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos:
+          - linux
+          - windows
+          - darwin
+        goarch:
+          - amd64
+          - arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: outils strip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils \
+            binutils-aarch64-linux-gnu \
+            gcc-aarch64-linux-gnu
+      - name: variables
+        run: |
+          BIN=${NOM}
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BIN=${BIN}.exe
+          fi
+          echo "BIN=$BIN" >> $GITHUB_ENV
+          ARCHIVE=${NOM}-${{ matrix.goos }}-${{ matrix.goarch }}
+          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+      - name: build
+        run: |
+          mkdir build
+          GOOS=${{ matrix.goos }} \
+          GOARCH=${{ matrix.goarch }} \
+          go build \
+            -trimpath \
+            -ldflags='${{ env.LDFLAGS }}' \
+            -o build/$BIN \
+            .
+      - name: strip linux
+        if: matrix.goos == 'linux'
+        run: |
+          if [ "${{ matrix.goarch }}" = "amd64" ]; then
+            strip build/$BIN
+          else
+            aarch64-linux-gnu-strip build/$BIN
+          fi
+      - name: archive
+        run: |
+          mkdir dist
+          cd build
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip ../dist/${ARCHIVE}.zip $BIN
+          else
+            tar -czf ../dist/${ARCHIVE}.tar.gz $BIN
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: dist/*
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: fusion
+        run: |
+          mkdir final
+          find artifacts -type f -exec cp {} final/ \;
+      - name: checksum
+        run: |
+          cd final
+          sha256sum * > SHA256SUMS
+      - name: release github
+        uses: softprops/action-gh-release@v2
+        with:
+          files: final/*
