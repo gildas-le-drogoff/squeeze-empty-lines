@@ -1,4 +1,5 @@
 package main
+
 import (
 	"bufio"
 	"bytes"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"sync"
 )
+
 var excludeDirs = map[string]struct{}{
 	".git":         {},
 	".venv":        {},
@@ -20,19 +22,48 @@ var excludeDirs = map[string]struct{}{
 	"venv":         {},
 }
 var excludeFiles = map[string]struct{}{
-	".env": {},
+	".env":            {},
+	".env.example":    {},
+	".env.production": {},
+	".env.local":      {},
+	"go.mod":          {},
+	"go.sum":          {},
 }
 var extensionsAutorisees = map[string]struct{}{
-	".bash": {}, ".bat": {}, ".c": {}, ".cfg": {}, ".cmd": {}, ".conf": {}, ".cpp": {}, ".cs": {}, ".css": {},
-	".fish": {}, ".go": {}, ".h": {}, ".hpp": {}, ".html": {}, ".ini": {}, ".java": {}, ".js": {}, ".json": {},
-	".jsonl": {}, ".jsx": {}, ".kt": {}, ".md": {}, ".mod": {}, ".php": {}, ".ps1": {}, ".py": {}, ".rb": {},
-	".rs": {}, ".scss": {}, ".sh": {}, ".sql": {}, ".sum": {}, ".swift": {}, ".toml": {}, ".ts": {}, ".tsx": {},
-	".txt": {}, ".xml": {}, ".yaml": {}, ".yml": {}, ".zsh": {},
+	".bash": {}, ".bat": {}, ".c": {}, ".cc": {}, ".cfg": {}, ".cmd": {},
+	".conf": {}, ".cpp": {}, ".cs": {}, ".css": {}, ".cxx": {},
+	".fish": {}, ".go": {}, ".h": {}, ".hpp": {}, ".hxx": {},
+	".html": {}, ".ini": {}, ".java": {}, ".js": {}, ".json": {},
+	".jsonl": {}, ".jsx": {}, ".kt": {}, ".kts": {},
+	".md": {}, ".mod": {}, ".sum": {}, ".work": {},
+	".php": {}, ".ps1": {}, ".py": {}, ".pyi": {},
+	".rb": {}, ".rs": {}, ".scss": {},
+	".sh": {}, ".sql": {}, ".swift": {},
+	".toml": {}, ".ts": {}, ".tsx": {},
+	".txt": {}, ".xml": {},
+	".yaml": {}, ".yml": {},
+	".zsh": {},
+	".vue": {}, ".svelte": {}, ".astro": {},
+	".mjs": {}, ".cjs": {},
+	".gradle": {}, ".properties": {},
+	".dockerfile": {},
 }
 var extensionsSensiblesIndentation = map[string]struct{}{
-	".py":   {},
-	".yaml": {},
-	".yml":  {},
+	".py":     {},
+	".pyi":    {},
+	".yaml":   {},
+	".yml":    {},
+	".nim":    {},
+	".coffee": {},
+	".pug":    {},
+	".jade":   {},
+}
+var fichiersSansExtensionAutorises = map[string]struct{}{
+	"Dockerfile":     {},
+	"Makefile":       {},
+	".gitignore":     {},
+	".gitattributes": {},
+	".editorconfig":  {},
 }
 var regexEspacesInternes = regexp.MustCompile(`[ \t]{2,}`)
 var regexNewline = regexp.MustCompile(`\r\n|\r|\n`)
@@ -40,14 +71,18 @@ var dryRun bool
 var backup bool
 var workers int
 var collapseInternalSpaces bool
+var maxSize int64
+
+const tailleMaxParDefaut int64 = 5 * 1024 * 1024
+
 var includePatterns multiFlag
 var excludePatterns multiFlag
 var includeRegex []*regexp.Regexp
 var excludeRegex []*regexp.Regexp
+
 type multiFlag []string
-func (m *multiFlag) String() string {
-	return ""
-}
+
+func (m *multiFlag) String() string { return "" }
 func (m *multiFlag) Set(value string) error {
 	*m = append(*m, value)
 	return nil
@@ -57,6 +92,7 @@ func main() {
 	flag.BoolVar(&backup, "backup", false, "")
 	flag.IntVar(&workers, "workers", runtime.NumCPU(), "")
 	flag.BoolVar(&collapseInternalSpaces, "collapse-internal-spaces", false, "")
+	flag.Int64Var(&maxSize, "max-size", tailleMaxParDefaut, "")
 	flag.Var(&includePatterns, "include", "")
 	flag.Var(&excludePatterns, "exclude", "")
 	flag.Parse()
@@ -136,6 +172,9 @@ func parcourir(root string, sem chan struct{}, wg *sync.WaitGroup) {
 		if !autoriseParRegex(path) {
 			return nil
 		}
+		if fichierTropGros(path) {
+			return nil
+		}
 		wg.Add(1)
 		go traiterAvecSemaphore(path, sem, wg)
 		return nil
@@ -150,6 +189,9 @@ func traiterAvecSemaphore(path string, sem chan struct{}, wg *sync.WaitGroup) {
 	traiter(path)
 }
 func traiter(path string) {
+	if fichierTropGros(path) {
+		return
+	}
 	if estBinaire(path) {
 		return
 	}
@@ -171,9 +213,22 @@ func traiter(path string) {
 	os.WriteFile(path, nouveau, mode)
 	fmt.Println("fix:", path)
 }
+func fichierTropGros(path string) bool {
+	if maxSize <= 0 {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return true
+	}
+	return info.Size() > maxSize
+}
 func lireFichier(path string) ([]byte, os.FileMode, bool) {
 	info, err := os.Stat(path)
 	if err != nil {
+		return nil, 0, false
+	}
+	if maxSize > 0 && info.Size() > maxSize {
 		return nil, 0, false
 	}
 	f, err := os.Open(path)
@@ -239,6 +294,10 @@ func excluFichier(path string) bool {
 	return ok
 }
 func extensionValide(path string) bool {
+	base := filepath.Base(path)
+	if _, ok := fichiersSansExtensionAutorises[base]; ok {
+		return true
+	}
 	ext := filepath.Ext(path)
 	if ext == "" {
 		return false
